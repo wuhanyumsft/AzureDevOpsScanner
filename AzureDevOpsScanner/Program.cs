@@ -187,7 +187,7 @@ namespace AzureDevOpsScanner
         {
             Console.WriteLine("| Project | Repository Name | Branch | Is Active | Has README.md | Has Owner | Has Policy | Policies |");
             Console.WriteLine("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
-            foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(rb => rb.RepoName).OrderBy(rb => !rb.Active))
+            foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(rb => rb.RepoName).OrderBy(rb => rb.Project).OrderBy(rb => !rb.Active))
             {
                 Console.WriteLine($"| {repoBranchStatus.Project} | {repoBranchStatus.RepoName} | {repoBranchStatus.Branch} | {repoBranchStatus.Active.ToString()} | {repoBranchStatus.HasReadMe.ToString()} | {repoBranchStatus.HasOwner.ToString()} | {repoBranchStatus.HasPolicy.ToString()} | {string.Join("<br><br>", repoBranchStatus.Policies)} |");
             }
