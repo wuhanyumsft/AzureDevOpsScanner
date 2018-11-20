@@ -9,12 +9,14 @@ using Microsoft.TeamFoundation.WorkItemTracking.WebApi;
 using Microsoft.TeamFoundation.WorkItemTracking.WebApi.Models;
 using Microsoft.VisualStudio.Services.Client;
 using Microsoft.VisualStudio.Services.WebApi;
-using Newtonsoft.Json;
+using System.Text.RegularExpressions;
 
 namespace AzureDevOpsScanner
 {
     class Program
     {
+        private readonly static Regex EmailRegex = new Regex(@"\A(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\Z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         //============= Config [Edit these with your settings] =====================
         internal const string azureDevOpsOrganizationUrl = "https://dev.azure.com/ceapex";
         //==========================================================================
@@ -69,7 +71,16 @@ namespace AzureDevOpsScanner
                 Console.WriteLine("| :--- | :--- | :--- | :--- | :--- | :--- |");
                 foreach (var repo in gitClient.GetRepositoriesAsync(project.Id).Result)
                 {
-                    var branches = gitClient.GetBranchesAsync(repo.Id).Result;
+                    List<GitBranchStats> branches = new List<GitBranchStats>();
+                    try
+                    {
+                        branches = gitClient.GetBranchesAsync(repo.Id).Result;
+                    }
+                    catch
+                    {
+
+                    }
+
                     foreach (var branch in branches)
                     {
                         if (branch.IsBaseVersion)
@@ -78,8 +89,17 @@ namespace AzureDevOpsScanner
                             try
                             {
                                 var readme = gitClient.GetItemAsync(repo.Id, "README.md", includeContent: true).Result;
-                                Console.Write($" | True");
-                                if (readme.Content.ToLower().Contains("owner"))
+                                if (!readme.Content.Contains("TODO: Give a short introduction of your project."))
+                                {
+                                    Console.Write($" | True");
+                                }
+                                else
+                                {
+                                    Console.Write($" | False");
+                                }
+                                
+                                if (readme.Content.ToLower().Contains("owner") || readme.Content.ToLower().Contains("contact")
+                                    || EmailRegex.IsMatch(readme.Content))
                                 {
                                     Console.Write($" | True");
                                 }
@@ -115,7 +135,7 @@ namespace AzureDevOpsScanner
                                     }
                                     else if (p.Type.DisplayName == "Status")
                                     {
-                                        return "Require a successfull status to be posted before updating protected refs";
+                                        return "Require a successful status to be posted before updating protected refs";
                                     }
                                     else if (p.Type.DisplayName == "Comment requirements")
                                     {
