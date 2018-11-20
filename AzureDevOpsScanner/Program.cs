@@ -87,9 +87,15 @@ namespace AzureDevOpsScanner
                         Console.WriteLine($"({++count}) {repo.Name} - {branch.Name}");
                         var repoBranchStatus = new RepoBranchStatus()
                         {
+                            Project = project.Name,
                             RepoName = repo.Name,
                             Branch = branch.Name
                         };
+
+                        if (branch.Commit.Author.Date >= DateTime.Now.AddMonths(-3))
+                        {
+                            repoBranchStatus.Active = true;
+                        }
 
                         try
                         {
@@ -179,11 +185,11 @@ namespace AzureDevOpsScanner
 
         public static void OutputResult(IList<RepoBranchStatus> repoBranchStatuses)
         {
-            Console.WriteLine("| Repository Name | Branch | Has README.md | Has Owner | Has Policy | Policies |");
-            Console.WriteLine("| :--- | :--- | :--- | :--- | :--- | :--- |");
-            foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(repoBranchStatus => repoBranchStatus.RepoName))
+            Console.WriteLine("| Project | Repository Name | Branch | Is Active | Has README.md | Has Owner | Has Policy | Policies |");
+            Console.WriteLine("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
+            foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(rb => rb.RepoName).OrderBy(rb => !rb.Active))
             {
-                Console.WriteLine($"| {repoBranchStatus.RepoName} | {repoBranchStatus.Branch} | {repoBranchStatus.HasReadMe.ToString()} | {repoBranchStatus.HasOwner.ToString()} | {repoBranchStatus.HasPolicy.ToString()} | {string.Join("<br><br>", repoBranchStatus.Policies)} |");
+                Console.WriteLine($"| {repoBranchStatus.Project} | {repoBranchStatus.RepoName} | {repoBranchStatus.Branch} | {repoBranchStatus.Active.ToString()} | {repoBranchStatus.HasReadMe.ToString()} | {repoBranchStatus.HasOwner.ToString()} | {repoBranchStatus.HasPolicy.ToString()} | {string.Join("<br><br>", repoBranchStatus.Policies)} |");
             }
         }
     }
