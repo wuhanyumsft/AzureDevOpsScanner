@@ -10,16 +10,21 @@ using Microsoft.TeamFoundation.WorkItemTracking.WebApi.Models;
 using Microsoft.VisualStudio.Services.Client;
 using Microsoft.VisualStudio.Services.WebApi;
 using System.Text.RegularExpressions;
+using System.IO;
+using CsvHelper;
 
 namespace AzureDevOpsScanner
 {
     class Program
     {
-        private readonly static Regex EmailRegex = new Regex(@"\A(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\Z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
         //============= Config [Edit these with your settings] =====================
-        internal const string azureDevOpsOrganizationUrl = "https://dev.azure.com/ceapex";
+        private const string azureDevOpsOrganizationUrl = "https://dev.azure.com/ceapex";
         //==========================================================================
+
+        private static GitHttpClient gitClient;
+        private static ProjectHttpClient projectClient;
+        private static TeamHttpClient teamClient;
+        private static PolicyHttpClient policyClient;
 
         //Console application to execute a user defined work item query
         static void Main(string[] args)
@@ -31,16 +36,40 @@ namespace AzureDevOpsScanner
             WorkItemTrackingHttpClient witClient = connection.GetClient<WorkItemTrackingHttpClient>();
             Wiql query = new Wiql() { Query = "SELECT [Id], [Title], [State] FROM workitems WHERE [Assigned To] = @Me" };
             WorkItemQueryResult queryResults = witClient.QueryByWiqlAsync(query).Result;
-            GitHttpClient gitClient = connection.GetClient<GitHttpClient>();
+            gitClient = connection.GetClient<GitHttpClient>();
 
-            ProjectHttpClient projectClient = connection.GetClient<ProjectHttpClient>();
-            TeamHttpClient teamClient = connection.GetClient<TeamHttpClient>();
-            PolicyHttpClient policyClient = connection.GetClient<PolicyHttpClient>();
+            projectClient = connection.GetClient<ProjectHttpClient>();
+            teamClient = connection.GetClient<TeamHttpClient>();
+            policyClient = connection.GetClient<PolicyHttpClient>();
 
+            //Display reults in console
+            /*
+            if (queryResults == null || queryResults.WorkItems.Count() == 0)
+            {
+                Console.WriteLine("Query did not find any results");
+            }
+            else
+            {
+                int count = 0;
+                foreach (var item in queryResults.WorkItems)
+                {
+                    count++;
+                    var workItem = witClient.GetWorkItemAsync(item.Id).Result;
+                    Console.WriteLine($"[{count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
+                }
+            }
+            */
+
+            // GetRepositoryStatus();
+
+            Console.WriteLine("Process finish.");
+            Console.ReadLine();
+        }
+
+        public static void GetRepositoryStatus()
+        {
             // Call to get the list of projects
             IEnumerable<TeamProjectReference> projects = projectClient.GetProjects().Result;
-
-            Dictionary<TeamProjectReference, IEnumerable<WebApiTeam>> results = new Dictionary<TeamProjectReference, IEnumerable<WebApiTeam>>();
 
             IList<RepoBranchStatus> result = new List<RepoBranchStatus>();
 
@@ -48,7 +77,7 @@ namespace AzureDevOpsScanner
             List<GitBranchStats> branches = new List<GitBranchStats>();
 
             // Iterate over the returned projects
-            foreach (var project in projects)
+            foreach (var project in projects.Where(project => project.Name == "Engineering"))
             {
                 Console.WriteLine($"Project: {project.Name}");
                 IDictionary<string, IList<PolicyConfiguration>> policyDict = new Dictionary<string, IList<PolicyConfiguration>>();
@@ -89,13 +118,10 @@ namespace AzureDevOpsScanner
                         {
                             Project = project.Name,
                             RepoName = repo.Name,
-                            Branch = branch.Name
+                            Branch = branch.Name,
+                            IsDefaultBranch = repo.DefaultBranch.Split('/').Last() == branch.Name,
+                            Active = branch.Commit.Author.Date >= DateTime.Now.AddMonths(-3)
                         };
-
-                        if (branch.Commit.Author.Date >= DateTime.Now.AddMonths(-3))
-                        {
-                            repoBranchStatus.Active = true;
-                        }
 
                         try
                         {
@@ -104,9 +130,9 @@ namespace AzureDevOpsScanner
                             {
                                 repoBranchStatus.HasReadMe = true;
                             }
-                                
+
                             if (readme.Content.ToLower().Contains("owner") || readme.Content.ToLower().Contains("contact")
-                                || EmailRegex.IsMatch(readme.Content))
+                                || readme.Content.ToLower().Contains("@microsoft.com"))
                             {
                                 repoBranchStatus.HasOwner = true;
                             }
@@ -159,37 +185,40 @@ namespace AzureDevOpsScanner
             }
             else
             {
-                OutputResult(result);
+                OutputResultCsv(result);
             }
-
-            //Display reults in console
-            /*
-            if (queryResults == null || queryResults.WorkItems.Count() == 0)
-            {
-                Console.WriteLine("Query did not find any results");
-            }
-            else
-            {
-                int count = 0;
-                foreach (var item in queryResults.WorkItems)
-                {
-                    count++;
-                    var workItem = witClient.GetWorkItemAsync(item.Id).Result;
-                    Console.WriteLine($"[{count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
-                }
-            }
-            */
-
-            Console.ReadLine();
         }
 
-        public static void OutputResult(IList<RepoBranchStatus> repoBranchStatuses)
+        public static void OutputResultCsv(IList<RepoBranchStatus> repoBranchStatuses)
         {
-            Console.WriteLine("| Project | Repository Name | Branch | Is Active | Has README.md | Has Owner | Has Policy | Policies |");
-            Console.WriteLine("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
-            foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(rb => rb.RepoName).OrderBy(rb => rb.Project).OrderBy(rb => !rb.Active))
+            using (StreamWriter sw = new StreamWriter("result.csv"))
             {
-                Console.WriteLine($"| {repoBranchStatus.Project} | {repoBranchStatus.RepoName} | {repoBranchStatus.Branch} | {repoBranchStatus.Active.ToString()} | {repoBranchStatus.HasReadMe.ToString()} | {repoBranchStatus.HasOwner.ToString()} | {repoBranchStatus.HasPolicy.ToString()} | {string.Join("<br><br>", repoBranchStatus.Policies)} |");
+                var writer = new CsvWriter(sw);
+                writer.Configuration.Delimiter = ",";
+                writer.WriteField("Project");
+                writer.WriteField("Repository Name");
+                writer.WriteField("Branch");
+                writer.WriteField("Is Default Branch");
+                writer.WriteField("Is Active");
+                writer.WriteField("Has README.md");
+                writer.WriteField("Has Owner");
+                writer.WriteField("Has Policy");
+                writer.WriteField("Policies");
+                writer.NextRecord();
+  
+                foreach (var repoBranchStatus in repoBranchStatuses.OrderBy(rb => rb.RepoName).OrderBy(rb => !rb.Active))
+                {
+                    writer.WriteField(repoBranchStatus.Project);
+                    writer.WriteField(repoBranchStatus.RepoName);
+                    writer.WriteField(repoBranchStatus.Branch);
+                    writer.WriteField(repoBranchStatus.IsDefaultBranch);
+                    writer.WriteField(repoBranchStatus.Active);
+                    writer.WriteField(repoBranchStatus.HasReadMe);
+                    writer.WriteField(repoBranchStatus.HasOwner);
+                    writer.WriteField(repoBranchStatus.HasPolicy);
+                    writer.WriteField(string.Join("\n", repoBranchStatus.Policies.Distinct().OrderBy(p => p)));
+                    writer.NextRecord();
+                }
             }
         }
     }

@@ -21,6 +21,8 @@ namespace AzureDevOpsScanner
 
         public bool Active { get; set; }
 
+        public bool IsDefaultBranch { get; set; }
+
         public bool HasReadMe { get; set; }
 
         public bool HasOwner { get; set; }
