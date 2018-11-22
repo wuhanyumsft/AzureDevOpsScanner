@@ -25,6 +25,7 @@ namespace AzureDevOpsScanner
         private static ProjectHttpClient projectClient;
         private static TeamHttpClient teamClient;
         private static PolicyHttpClient policyClient;
+        private static WorkItemTrackingHttpClient witClient;
 
         //Console application to execute a user defined work item query
         static void Main(string[] args)
@@ -33,37 +34,79 @@ namespace AzureDevOpsScanner
             VssConnection connection = new VssConnection(new Uri(azureDevOpsOrganizationUrl), new VssClientCredentials());
 
             //create http client and query for resutls
-            WorkItemTrackingHttpClient witClient = connection.GetClient<WorkItemTrackingHttpClient>();
-            Wiql query = new Wiql() { Query = "SELECT [Id], [Title], [State] FROM workitems WHERE [Assigned To] = @Me" };
-            WorkItemQueryResult queryResults = witClient.QueryByWiqlAsync(query).Result;
+            witClient = connection.GetClient<WorkItemTrackingHttpClient>();
             gitClient = connection.GetClient<GitHttpClient>();
-
             projectClient = connection.GetClient<ProjectHttpClient>();
             teamClient = connection.GetClient<TeamHttpClient>();
             policyClient = connection.GetClient<PolicyHttpClient>();
 
-            //Display reults in console
-            /*
+            Wiql query = new Wiql() { Query = "SELECT [Id], [Title], [State] FROM workitems WHERE [Work Item Type] = 'Feature'" };
+            WorkItemQueryResult queryResults = witClient.QueryByWiqlAsync(query).Result;
+
             if (queryResults == null || queryResults.WorkItems.Count() == 0)
             {
                 Console.WriteLine("Query did not find any results");
             }
             else
             {
+                var result = new List<FeatureStatus>();
                 int count = 0;
                 foreach (var item in queryResults.WorkItems)
                 {
-                    count++;
-                    var workItem = witClient.GetWorkItemAsync(item.Id).Result;
-                    Console.WriteLine($"[{count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
+                    var workItem = witClient.GetWorkItemAsync(item.Id, expand: WorkItemExpand.All).Result;
+                    result.Add(new FeatureStatus()
+                    {
+                        Id = item.Id,
+                        Title = workItem.Fields["System.Title"].ToString(),
+                        Project = workItem.Fields["System.TeamProject"].ToString(),
+                        Status = workItem.Fields["System.State"].ToString(),
+                        IsConnectedWithCommitOrPullRequest = CheckIfWorkItemConnectedWithCommitOrPullRequest(item.Id, workItem)
+                    });
+                    Console.WriteLine($"[{++count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
                 }
+
+                OutputResultCsv(result);
             }
-            */
+            
 
             // GetRepositoryStatus();
 
             Console.WriteLine("Process finish.");
             Console.ReadLine();
+        }
+
+        public static bool CheckIfWorkItemConnectedWithCommitOrPullRequest(int id, WorkItem workItem = null)
+        {
+            if (workItem == null)
+            {
+                workItem = witClient.GetWorkItemAsync(id, expand: WorkItemExpand.Relations).Result;
+            }
+
+            if (workItem.Relations == null)
+            {
+                return false;
+            }
+
+            foreach (var relation in workItem.Relations)
+            {
+                if (relation.Rel == "ArtifactLink")
+                {
+                    return true;
+                }
+            }
+
+            foreach (var relation in workItem.Relations)
+            {
+                if (relation.Rel == "System.LinkTypes.Hierarchy-Forward")
+                {
+                    if (CheckIfWorkItemConnectedWithCommitOrPullRequest(int.Parse(relation.Url.Split('/').Last())))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         public static void GetRepositoryStatus()
@@ -191,7 +234,7 @@ namespace AzureDevOpsScanner
 
         public static void OutputResultCsv(IList<RepoBranchStatus> repoBranchStatuses)
         {
-            using (StreamWriter sw = new StreamWriter("result.csv"))
+            using (StreamWriter sw = new StreamWriter("result_repobranch.csv"))
             {
                 var writer = new CsvWriter(sw);
                 writer.Configuration.Delimiter = ",";
@@ -217,6 +260,31 @@ namespace AzureDevOpsScanner
                     writer.WriteField(repoBranchStatus.HasOwner);
                     writer.WriteField(repoBranchStatus.HasPolicy);
                     writer.WriteField(string.Join("\n", repoBranchStatus.Policies.Distinct().OrderBy(p => p)));
+                    writer.NextRecord();
+                }
+            }
+        }
+
+        public static void OutputResultCsv(IList<FeatureStatus> featureStatuses)
+        {
+            using (StreamWriter sw = new StreamWriter("result_feature.csv"))
+            {
+                var writer = new CsvWriter(sw);
+                writer.Configuration.Delimiter = ",";
+                writer.WriteField("Project");
+                writer.WriteField("Id");
+                writer.WriteField("Title");
+                writer.WriteField("Status");
+                writer.WriteField("Is Connected With Commit Or PullRequest");
+                writer.NextRecord();
+
+                foreach (var feature in featureStatuses.OrderBy(feature => feature.Id))
+                {
+                    writer.WriteField(feature.Project);
+                    writer.WriteField(feature.Id);
+                    writer.WriteField(feature.Title);
+                    writer.WriteField(feature.Status);
+                    writer.WriteField(feature.IsConnectedWithCommitOrPullRequest);
                     writer.NextRecord();
                 }
             }
