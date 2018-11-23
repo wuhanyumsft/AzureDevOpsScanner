@@ -26,6 +26,7 @@ namespace AzureDevOpsScanner
         private static TeamHttpClient teamClient;
         private static PolicyHttpClient policyClient;
         private static WorkItemTrackingHttpClient witClient;
+        private static IDictionary<int, bool> hasCodeChangeDict = new Dictionary<int, bool>();
 
         //Console application to execute a user defined work item query
         static void Main(string[] args)
@@ -51,18 +52,24 @@ namespace AzureDevOpsScanner
             {
                 var result = new List<FeatureStatus>();
                 int count = 0;
-                foreach (var item in queryResults.WorkItems)
+                var featureIds = queryResults.WorkItems.Select(item => item.Id);
+                for (var i = 0; i < featureIds.Count() / 100 + 1; i++)
                 {
-                    var workItem = witClient.GetWorkItemAsync(item.Id, expand: WorkItemExpand.All).Result;
-                    result.Add(new FeatureStatus()
+                    var workItems = witClient.GetWorkItemsAsync(featureIds.Skip(i * 100).Take(100), expand: WorkItemExpand.All).Result;
+                    foreach (var workItem in workItems)
                     {
-                        Id = item.Id,
-                        Title = workItem.Fields["System.Title"].ToString(),
-                        Project = workItem.Fields["System.TeamProject"].ToString(),
-                        Status = workItem.Fields["System.State"].ToString(),
-                        IsConnectedWithCommitOrPullRequest = CheckIfWorkItemConnectedWithCommitOrPullRequest(item.Id, workItem)
-                    });
-                    Console.WriteLine($"[{++count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
+                        var hasCodeChange = CheckIfWorkItemConnectedWithCommitOrPullRequest(workItem);
+                        result.Add(new FeatureStatus()
+                        {
+                            Id = workItem.Id.Value,
+                            Title = workItem.Fields["System.Title"].ToString(),
+                            Project = workItem.Fields["System.TeamProject"].ToString(),
+                            Status = workItem.Fields["System.State"].ToString(),
+                            IsConnectedWithCommitOrPullRequest = hasCodeChange
+                        });
+                        hasCodeChangeDict[workItem.Id.Value] = hasCodeChange;
+                        Console.WriteLine($"[{++count}]{workItem.Fields["System.WorkItemType"]} {workItem.Id}: {workItem.Fields["System.Title"]}");
+                    }
                 }
 
                 OutputResultCsv(result);
@@ -75,13 +82,8 @@ namespace AzureDevOpsScanner
             Console.ReadLine();
         }
 
-        public static bool CheckIfWorkItemConnectedWithCommitOrPullRequest(int id, WorkItem workItem = null)
+        public static bool CheckIfWorkItemConnectedWithCommitOrPullRequest(WorkItem workItem = null, bool allowExpand = true)
         {
-            if (workItem == null)
-            {
-                workItem = witClient.GetWorkItemAsync(id, expand: WorkItemExpand.Relations).Result;
-            }
-
             if (workItem.Relations == null)
             {
                 return false;
@@ -95,15 +97,48 @@ namespace AzureDevOpsScanner
                 }
             }
 
-            foreach (var relation in workItem.Relations)
+            if (!allowExpand)
             {
-                if (relation.Rel == "System.LinkTypes.Hierarchy-Forward")
+                return false;
+            }
+
+            var workItemType = workItem.Fields["System.WorkItemType"].ToString();
+
+            var relationIdLookup = workItem.Relations.Where(relation => relation.Rel == "System.LinkTypes.Hierarchy-Forward" || relation.Rel == "System.LinkTypes.Related")
+                                    .ToLookup(relation => int.Parse(relation.Url.Split('/').Last()), relation => relation.Rel);
+
+            if (relationIdLookup.Where(relation => hasCodeChangeDict.ContainsKey(relation.Key) && hasCodeChangeDict[relation.Key]).Count() > 0)
+            {
+                return true;
+            }
+
+            var uncheckedRelationIds = relationIdLookup.Where(relation => !hasCodeChangeDict.ContainsKey(relation.Key)).Select(relation => relation.Key);
+            if (uncheckedRelationIds.Count() > 0)
+            {
+                var newWorkItems = witClient.GetWorkItemsAsync(uncheckedRelationIds, expand: WorkItemExpand.Relations).Result;
+
+                foreach (var newWorkItem in newWorkItems)
                 {
-                    if (CheckIfWorkItemConnectedWithCommitOrPullRequest(int.Parse(relation.Url.Split('/').Last())))
+                    if (newWorkItem.Id.HasValue)
                     {
-                        return true;
+                        var newWorkItemId = newWorkItem.Id.Value;
+                        if (hasCodeChangeDict.ContainsKey(newWorkItemId))
+                        {
+                            return hasCodeChangeDict[newWorkItemId];
+                        }
+
+                        if (CheckIfWorkItemConnectedWithCommitOrPullRequest(newWorkItem, !relationIdLookup[newWorkItemId].Contains("System.LinkTypes.Related")))
+                        {
+                            hasCodeChangeDict[newWorkItemId] = true;
+                            return true;
+                        }
                     }
                 }
+            }
+
+            if (allowExpand)
+            {
+                hasCodeChangeDict[workItem.Id.Value] = false;
             }
 
             return false;
